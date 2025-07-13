@@ -89,20 +89,36 @@ bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fi
     stringstream buffer;
     string line;
 
-    regex copy_pattern(R"(file copy -force\s+\.\./.+?/([^/\s]+)\s+\.\./.+)");
+    // Match full line with source and destination
+    regex copy_pattern(R"(file copy -force\s+(.*?)\s+(.*))");
+
     unordered_set<string> alreadyHandled;
     bool modified = false;
 
+    cout << "\n🔍 [DEBUG] Starting nc.tcl patch..." << endl;
+
     while (getline(in, line)) {
         smatch match;
-        if (regex_search(line, match, copy_pattern)) {
-            string filename = match[1].str();
+        if (regex_match(line, match, copy_pattern)) {
+            string source = match[1].str();
+            string destination = match[2].str();
+
+            // Extract filename from source
+            size_t lastSlash = source.find_last_of("/");
+            string filename = (lastSlash != string::npos) ? source.substr(lastSlash + 1) : source;
+
+            cout << "[DEBUG] Matched line: " << line << endl;
+            cout << "         → Filename: " << filename << ", Destination: " << destination << endl;
+
             if (fileMap.count(filename)) {
                 alreadyHandled.insert(filename);
-                size_t last_space = line.rfind(" ");
-                string newLine = line.substr(0, last_space) + " ../";
-                buffer << newLine << endl;
-                if (newLine != line) modified = true;
+                if (destination != "../") {
+                    buffer << "file copy -force " << source << " ../" << endl;
+                    cout << "[DEBUG] ➤ Updated destination for: " << filename << endl;
+                    modified = true;
+                } else {
+                    buffer << line << endl;
+                }
             } else {
                 buffer << line << endl;
             }
@@ -115,6 +131,7 @@ bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fi
     // Append missing file copy lines
     for (const auto& [filename, fullpath] : fileMap) {
         if (!alreadyHandled.count(filename)) {
+            cout << "[DEBUG] ➕ Appending missing copy for: " << filename << endl;
             buffer << "file copy -force ../" << fullpath << " ../" << endl;
             modified = true;
         }
@@ -123,6 +140,8 @@ bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fi
     if (modified) {
         ofstream out(ncTclPath);
         out << buffer.str();
+    } else {
+        cout << "[DEBUG] 🎉 No changes needed in nc.tcl" << endl;
     }
 
     return modified;
