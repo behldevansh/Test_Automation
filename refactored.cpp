@@ -10,7 +10,7 @@
 
 using namespace std;
 
-// 🔁 Recursively scan directory for gold-matching files
+// 🔁 Recursively scan directory for matching files
 void scanDirectory(const string& basePath, const unordered_set<string>& goldFiles, unordered_map<string, string>& fileMap) {
     DIR* dir = opendir(basePath.c_str());
     if (!dir) return;
@@ -26,7 +26,7 @@ void scanDirectory(const string& basePath, const unordered_set<string>& goldFile
         if (stat(fullPath.c_str(), &st) == -1) continue;
 
         if (S_ISDIR(st.st_mode)) {
-            scanDirectory(fullPath, goldFiles, fileMap);  // Recursive
+            scanDirectory(fullPath, goldFiles, fileMap);  // Recursive call
         } else if (S_ISREG(st.st_mode)) {
             if (goldFiles.count(name)) {
                 fileMap[name] = fullPath;
@@ -37,7 +37,7 @@ void scanDirectory(const string& basePath, const unordered_set<string>& goldFile
     closedir(dir);
 }
 
-// 🔍 Load all filenames in golds/
+// 🔍 Load all filenames from golds/
 unordered_set<string> getGoldFilenames(const string& goldsPath) {
     unordered_set<string> goldFiles;
     DIR* dir = opendir(goldsPath.c_str());
@@ -83,15 +83,13 @@ bool patchMakefile(const string& makefilePath) {
     return modified;
 }
 
-// ✏️ Patch nc.tcl and add missing file copy lines
+// ✏️ Patch nc.tcl to fix paths and add missing copy commands
 bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fileMap) {
     ifstream in(ncTclPath);
     stringstream buffer;
     string line;
 
-    // Match full line with source and destination
     regex copy_pattern(R"(file copy -force\s+(.*?)\s+(.*))");
-
     unordered_set<string> alreadyHandled;
     bool modified = false;
 
@@ -103,7 +101,6 @@ bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fi
             string source = match[1].str();
             string destination = match[2].str();
 
-            // Extract filename from source
             size_t lastSlash = source.find_last_of("/");
             string filename = (lastSlash != string::npos) ? source.substr(lastSlash + 1) : source;
 
@@ -128,10 +125,10 @@ bool patchNcTcl(const string& ncTclPath, const unordered_map<string, string>& fi
     }
     in.close();
 
-    // Append missing file copy lines
+    // ➕ Add missing file copy -force commands
     for (const auto& [filename, fullpath] : fileMap) {
         if (!alreadyHandled.count(filename)) {
-            cout << "[DEBUG] ➕ Appending missing copy for: " << filename << endl;
+            cout << "[DEBUG] ➕ Appending missing file copy for: " << filename << endl;
             buffer << "file copy -force ../" << fullpath << " ../" << endl;
             modified = true;
         }
@@ -152,10 +149,10 @@ int main() {
     string makefilePath = "Makefile";
     string ncTclPath = "scripts/nc.tcl";
 
-    // 1. Load gold file names
+    // Step 1: Get gold filenames
     unordered_set<string> goldFiles = getGoldFilenames(goldsPath);
 
-    // 2. Get SYSRTEMP path from Makefile
+    // Step 2: Extract SYSRTEMP path
     ifstream makefile(makefilePath);
     string sysrtempPath;
     regex sysretemp_regex(R"(SYSRTEMP\s*=\s*(.+))");
@@ -174,18 +171,19 @@ int main() {
         return 1;
     }
 
-    // 3. Recursively scan result folder
+    // Step 3: Map gold files to result file paths
     unordered_map<string, string> fileMap;
     scanDirectory(sysrtempPath, goldFiles, fileMap);
 
-    // 4. Patch files
+    // Step 4: Patch files
     bool changedNcTcl = patchNcTcl(ncTclPath, fileMap);
     bool changedMakefile = patchMakefile(makefilePath);
 
+    // Step 5: Final result
     if (!changedNcTcl && !changedMakefile) {
-        cout << "✅ All files already up to date. No changes made." << endl;
+        cout << "\n✅ All files already up to date. No changes made." << endl;
     } else {
-        cout << "✅ Refactoring complete. Files updated:" << endl;
+        cout << "\n✅ Refactoring complete. Files updated:" << endl;
         if (changedNcTcl) cout << " - " << ncTclPath << endl;
         if (changedMakefile) cout << " - " << makefilePath << endl;
     }
