@@ -8,7 +8,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-// ✅ Recursively scan a directory and collect full paths
+// ✅ Recursively scan all folders under results
 void scanDirectoryRecursive(const std::string &basePath, std::map<std::string,std::string> &filePaths) {
     DIR *dir = opendir(basePath.c_str());
     if (!dir) return;
@@ -27,7 +27,6 @@ void scanDirectoryRecursive(const std::string &basePath, std::map<std::string,st
                 if (filePaths.find(name) == filePaths.end()) {
                     std::string rel = fullPath;
                     for (auto &c : rel) if (c == '\\') c = '/';
-                    // make it relative to project root
                     if (rel.rfind("results/", 0) == 0) {
                         rel = "../" + rel.substr(8); // strip "results/"
                     } else {
@@ -63,6 +62,28 @@ std::set<std::string> getGoldFiles(const std::string &goldPath) {
     return goldFiles;
 }
 
+// ✅ Update Makefile to SYSRTEMP = .
+void updateMakefile(const std::string &makefilePath) {
+    std::ifstream in(makefilePath);
+    if (!in.is_open()) {
+        std::cerr << "Error: Cannot open Makefile for update.\n";
+        return;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    std::regex re("^\\s*SYSRTEMP\\s*=");
+    while (std::getline(in, line)) {
+        if (std::regex_search(line, re)) {
+            lines.push_back("SYSRTEMP = .");
+        } else {
+            lines.push_back(line);
+        }
+    }
+    in.close();
+    std::ofstream out(makefilePath, std::ios::trunc);
+    for (auto &l : lines) out << l << "\n";
+}
+
 // ✅ Process nc.tcl
 void processNcTcl(const std::string &ncPath,
                   const std::set<std::string> &goldFiles,
@@ -83,6 +104,7 @@ void processNcTcl(const std::string &ncPath,
 
     while (std::getline(in, line)) {
         std::smatch m;
+        // handle file copy
         if (std::regex_search(line, m, reCopy)) {
             std::string src = m[1].str();
             size_t pos = src.find_last_of("/\\");
@@ -93,6 +115,7 @@ void processNcTcl(const std::string &ncPath,
                 continue;
             }
         }
+        // handle dump
         if (std::regex_search(line, m, reAnyCommandWithBraces)) {
             std::string beforeBrace = m[1].str();
             std::string inside = m[2].str();
@@ -114,7 +137,7 @@ void processNcTcl(const std::string &ncPath,
     }
     in.close();
 
-    // Append missing file copy
+    // append missing file copy
     for (const auto &gold : goldFiles) {
         if (resultPaths.count(gold) && !alreadyCopied.count(gold)) {
             std::string fullPath = resultPaths.at(gold);
@@ -129,15 +152,20 @@ void processNcTcl(const std::string &ncPath,
 int main() {
     std::string goldPath = "golds";
     std::string ncPath = "scripts/nc.tcl";
+    std::string makefilePath = "Makefile";
 
     auto goldFiles = getGoldFiles(goldPath);
-    std::cout << "[INFO] Gold files: " << goldFiles.size() << "\n";
+    std::cout << "[INFO] Gold files found: " << goldFiles.size() << "\n";
 
     std::map<std::string,std::string> resultPaths;
     scanDirectoryRecursive("results", resultPaths);
     std::cout << "[INFO] Files found in results: " << resultPaths.size() << "\n";
 
     processNcTcl(ncPath, goldFiles, resultPaths);
-    std::cout << "✅ Done. nc.tcl updated (independent of SYSRTEMP).\n";
+
+    // ✅ always set SYSRTEMP = . at the end
+    updateMakefile(makefilePath);
+
+    std::cout << "✅ Done. nc.tcl updated and Makefile SYSRTEMP fixed.\n";
     return 0;
 }
