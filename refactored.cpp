@@ -11,7 +11,10 @@
 // ✅ Recursively scan all folders under results
 void scanDirectoryRecursive(const std::string &basePath, std::map<std::string,std::string> &filePaths) {
     DIR *dir = opendir(basePath.c_str());
-    if (!dir) return;
+    if (!dir) {
+        std::cerr << "[DEBUG] Cannot open directory: " << basePath << "\n";
+        return;
+    }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr) {
@@ -45,7 +48,7 @@ std::set<std::string> getGoldFiles(const std::string &goldPath) {
     std::set<std::string> goldFiles;
     DIR *dir = opendir(goldPath.c_str());
     if (!dir) {
-        std::cerr << "Error: golds folder not found at " << goldPath << "\n";
+        std::cerr << "[DEBUG] Cannot open golds folder: " << goldPath << "\n";
         return goldFiles;
     }
     struct dirent *entry;
@@ -66,7 +69,7 @@ std::set<std::string> getGoldFiles(const std::string &goldPath) {
 void updateMakefile(const std::string &makefilePath) {
     std::ifstream in(makefilePath);
     if (!in.is_open()) {
-        std::cerr << "Error: Cannot open Makefile for update.\n";
+        std::cerr << "[DEBUG] Cannot open Makefile for update.\n";
         return;
     }
     std::vector<std::string> lines;
@@ -74,6 +77,7 @@ void updateMakefile(const std::string &makefilePath) {
     std::regex re("^\\s*SYSRTEMP\\s*=");
     while (std::getline(in, line)) {
         if (std::regex_search(line, re)) {
+            std::cout << "[DEBUG] Updating SYSRTEMP line: " << line << " -> SYSRTEMP = .\n";
             lines.push_back("SYSRTEMP = .");
         } else {
             lines.push_back(line);
@@ -90,7 +94,7 @@ void processNcTcl(const std::string &ncPath,
                   const std::map<std::string,std::string> &resultPaths) {
     std::ifstream in(ncPath);
     if (!in.is_open()) {
-        std::cerr << "Error: Cannot open nc.tcl.\n";
+        std::cerr << "[DEBUG] Cannot open nc.tcl at " << ncPath << "\n";
         return;
     }
 
@@ -104,49 +108,45 @@ void processNcTcl(const std::string &ncPath,
 
     while (std::getline(in, line)) {
         std::smatch m;
-        // handle file copy
         if (std::regex_search(line, m, reCopy)) {
             std::string src = m[1].str();
             size_t pos = src.find_last_of("/\\");
             std::string filename = (pos == std::string::npos) ? src : src.substr(pos + 1);
-            if (goldFiles.count(filename) && resultPaths.count(filename)) {
-                alreadyCopied.insert(filename);
-                lines.push_back("catch { file copy -force " + src + " ../ }");
-                continue;
-            }
-        }
-        // handle dump
-        if (std::regex_search(line, m, reAnyCommandWithBraces)) {
-            std::string beforeBrace = m[1].str();
-            std::string inside = m[2].str();
-            std::smatch mdump;
-            if (std::regex_search(inside, mdump, reDumpArg)) {
-                std::string dumpPath = mdump[1].str();
-                size_t pos = dumpPath.find_last_of("/\\");
-                std::string dumpFile = (pos == std::string::npos) ? dumpPath : dumpPath.substr(pos + 1);
-                std::string newInside = std::regex_replace(
-                    inside,
-                    reDumpArg,
-                    std::string("-dump ../") + dumpFile
-                );
-                lines.push_back(beforeBrace + newInside + "}");
-                continue;
-            }
+            alreadyCopied.insert(filename);
         }
         lines.push_back(line);
     }
     in.close();
 
+    std::cout << "[DEBUG] Gold files count: " << goldFiles.size() << "\n";
+    std::cout << "[DEBUG] Files found in results: " << resultPaths.size() << "\n";
+
+    std::cout << "[DEBUG] Golds that will be checked:\n";
+    for (const auto &gold : goldFiles) {
+        if (resultPaths.count(gold)) {
+            std::cout << "  ✅ Found in results: " << gold << " -> " << resultPaths.at(gold);
+            if (alreadyCopied.count(gold)) {
+                std::cout << " (already copied)\n";
+            } else {
+                std::cout << " (will append)\n";
+            }
+        } else {
+            std::cout << "  ❌ NOT found in results: " << gold << "\n";
+        }
+    }
+
     // append missing file copy
     for (const auto &gold : goldFiles) {
         if (resultPaths.count(gold) && !alreadyCopied.count(gold)) {
             std::string fullPath = resultPaths.at(gold);
+            std::cout << "[DEBUG] Appending: " << fullPath << "\n";
             lines.push_back("catch { file copy -force " + fullPath + " ../ }");
         }
     }
 
     std::ofstream out(ncPath, std::ios::trunc);
     for (auto &l : lines) out << l << "\n";
+    std::cout << "[DEBUG] nc.tcl write complete.\n";
 }
 
 int main() {
@@ -154,18 +154,17 @@ int main() {
     std::string ncPath = "scripts/nc.tcl";
     std::string makefilePath = "Makefile";
 
+    std::cout << "[DEBUG] Scanning golds folder...\n";
     auto goldFiles = getGoldFiles(goldPath);
-    std::cout << "[INFO] Gold files found: " << goldFiles.size() << "\n";
 
+    std::cout << "[DEBUG] Scanning results folder recursively...\n";
     std::map<std::string,std::string> resultPaths;
     scanDirectoryRecursive("results", resultPaths);
-    std::cout << "[INFO] Files found in results: " << resultPaths.size() << "\n";
 
     processNcTcl(ncPath, goldFiles, resultPaths);
 
-    // ✅ always set SYSRTEMP = . at the end
     updateMakefile(makefilePath);
 
-    std::cout << "✅ Done. nc.tcl updated and Makefile SYSRTEMP fixed.\n";
+    std::cout << "✅ Done. Check output above.\n";
     return 0;
 }
