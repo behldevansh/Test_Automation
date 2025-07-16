@@ -24,18 +24,16 @@ void scanDirectoryRecursive(const std::string &basePath, std::map<std::string,st
             if (S_ISDIR(pathStat.st_mode)) {
                 scanDirectoryRecursive(fullPath, filePaths);
             } else if (S_ISREG(pathStat.st_mode)) {
-                // only store first occurrence
                 if (filePaths.find(name) == filePaths.end()) {
-                    // store path relative to project, prefix "../" like original
-                    std::string relativePath = fullPath;
-                    // ensure relativePath uses forward slashes
-                    for (auto &c : relativePath) if (c == '\\') c = '/';
-                    // if fullPath is like "results/output/ref_5g/mtbf_analysis/xyz.csv"
-                    // we want "../output/ref_5g/mtbf_analysis/xyz.csv"
-                    if (relativePath.rfind("results/", 0) == 0) {
-                        relativePath = "../" + relativePath.substr(8);
+                    std::string rel = fullPath;
+                    for (auto &c : rel) if (c == '\\') c = '/';
+                    // make it relative to project root
+                    if (rel.rfind("results/", 0) == 0) {
+                        rel = "../" + rel.substr(8); // strip "results/"
+                    } else {
+                        rel = "../" + rel;
                     }
-                    filePaths[name] = relativePath;
+                    filePaths[name] = rel;
                 }
             }
         }
@@ -43,7 +41,7 @@ void scanDirectoryRecursive(const std::string &basePath, std::map<std::string,st
     closedir(dir);
 }
 
-// ✅ Read filenames from golds
+// ✅ Read filenames from golds folder
 std::set<std::string> getGoldFiles(const std::string &goldPath) {
     std::set<std::string> goldFiles;
     DIR *dir = opendir(goldPath.c_str());
@@ -55,7 +53,6 @@ std::set<std::string> getGoldFiles(const std::string &goldPath) {
     while ((entry = readdir(dir)) != nullptr) {
         std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
-
         std::string fullPath = goldPath + "/" + name;
         struct stat pathStat;
         if (stat(fullPath.c_str(), &pathStat) == 0 && S_ISREG(pathStat.st_mode)) {
@@ -64,46 +61,6 @@ std::set<std::string> getGoldFiles(const std::string &goldPath) {
     }
     closedir(dir);
     return goldFiles;
-}
-
-// ✅ Parse SYSRTEMP from Makefile
-std::string getSYSRTEMP(const std::string &makefilePath) {
-    std::ifstream in(makefilePath);
-    if (!in.is_open()) {
-        std::cerr << "Error: Cannot open Makefile.\n";
-        return {};
-    }
-    std::string line;
-    std::regex re("^\\s*SYSRTEMP\\s*=\\s*(.*)$");
-    std::smatch m;
-    while (std::getline(in, line)) {
-        if (std::regex_search(line, m, re)) {
-            return m[1].str();
-        }
-    }
-    return {};
-}
-
-// ✅ Update Makefile
-void updateMakefile(const std::string &makefilePath) {
-    std::ifstream in(makefilePath);
-    if (!in.is_open()) {
-        std::cerr << "Error: Cannot open Makefile for update.\n";
-        return;
-    }
-    std::vector<std::string> lines;
-    std::string line;
-    std::regex re("^\\s*SYSRTEMP\\s*=");
-    while (std::getline(in, line)) {
-        if (std::regex_search(line, re)) {
-            lines.push_back("SYSRTEMP = .");
-        } else {
-            lines.push_back(line);
-        }
-    }
-    in.close();
-    std::ofstream out(makefilePath, std::ios::trunc);
-    for (auto &l : lines) out << l << "\n";
 }
 
 // ✅ Process nc.tcl
@@ -117,7 +74,7 @@ void processNcTcl(const std::string &ncPath,
     }
 
     std::vector<std::string> lines;
-    std::set<std::string> alreadyCopied; // track which golds are handled
+    std::set<std::string> alreadyCopied;
     std::string line;
 
     std::regex reCopy(R"(file copy -force\s+([^\s]+)\s+([^\s]+))");
@@ -126,21 +83,16 @@ void processNcTcl(const std::string &ncPath,
 
     while (std::getline(in, line)) {
         std::smatch m;
-
-        // ---- Handle file copy lines ----
         if (std::regex_search(line, m, reCopy)) {
             std::string src = m[1].str();
             size_t pos = src.find_last_of("/\\");
             std::string filename = (pos == std::string::npos) ? src : src.substr(pos + 1);
             if (goldFiles.count(filename) && resultPaths.count(filename)) {
                 alreadyCopied.insert(filename);
-                std::string newLine = "catch { file copy -force " + src + " ../ }";
-                lines.push_back(newLine);
+                lines.push_back("catch { file copy -force " + src + " ../ }");
                 continue;
             }
         }
-
-        // ---- Handle universal dump lines ----
         if (std::regex_search(line, m, reAnyCommandWithBraces)) {
             std::string beforeBrace = m[1].str();
             std::string inside = m[2].str();
@@ -154,17 +106,15 @@ void processNcTcl(const std::string &ncPath,
                     reDumpArg,
                     std::string("-dump ../") + dumpFile
                 );
-                std::string newLine = beforeBrace + newInside + "}";
-                lines.push_back(newLine);
+                lines.push_back(beforeBrace + newInside + "}");
                 continue;
             }
         }
-
         lines.push_back(line);
     }
     in.close();
 
-    // ---- Append missing file copy commands ----
+    // Append missing file copy
     for (const auto &gold : goldFiles) {
         if (resultPaths.count(gold) && !alreadyCopied.count(gold)) {
             std::string fullPath = resultPaths.at(gold);
@@ -178,26 +128,16 @@ void processNcTcl(const std::string &ncPath,
 
 int main() {
     std::string goldPath = "golds";
-    std::string makefilePath = "Makefile";
     std::string ncPath = "scripts/nc.tcl";
 
     auto goldFiles = getGoldFiles(goldPath);
-    std::cout << "Gold files found: " << goldFiles.size() << "\n";
+    std::cout << "[INFO] Gold files: " << goldFiles.size() << "\n";
 
-    std::string sysrtemp = getSYSRTEMP(makefilePath);
-    if (sysrtemp.empty()) {
-        std::cerr << "Error: No SYSRTEMP found.\n";
-        return 1;
-    }
-
-    std::string sysrtempPath = "results/" + sysrtemp;
     std::map<std::string,std::string> resultPaths;
-    scanDirectoryRecursive(sysrtempPath, resultPaths);
-    std::cout << "Result files found: " << resultPaths.size() << "\n";
+    scanDirectoryRecursive("results", resultPaths);
+    std::cout << "[INFO] Files found in results: " << resultPaths.size() << "\n";
 
     processNcTcl(ncPath, goldFiles, resultPaths);
-    updateMakefile(makefilePath);
-
-    std::cout << "✅ Done. nc.tcl updated with missing file copies & Makefile fixed.\n";
+    std::cout << "✅ Done. nc.tcl updated (independent of SYSRTEMP).\n";
     return 0;
 }
