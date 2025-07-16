@@ -110,25 +110,18 @@ void processNcTcl(const std::string &ncPath,
     std::vector<std::string> lines;
     std::string line;
 
-    // Regex for file copy
     std::regex reCopy(R"(file copy -force\s+([^\s]+)\s+([^\s]+))");
-    // Regex for MTBFPreferences with dump
     std::regex reDump(R"(sdaReliability::MTBFPreferences\s*\{([^}]*)\})");
-    // Inside MTBFPreferences: -dump path
-    std::regex reDumpArg(R"(-dump\s+([^\s}]+))");
+    std::regex reDumpArg(R"(-dump\s+(\.\.[^}\s]+))");
 
     while (std::getline(in, line)) {
         std::smatch m;
 
-        // ---- Handle file copy lines ----
+        // ---- file copy handling ----
         if (std::regex_search(line, m, reCopy)) {
             std::string src = m[1].str();
-            std::string dest = m[2].str();
-
-            // extract filename from src
             size_t pos = src.find_last_of("/\\");
             std::string filename = (pos == std::string::npos) ? src : src.substr(pos + 1);
-
             if (goldFiles.count(filename) && resultFiles.count(filename)) {
                 std::string newLine = "catch { file copy -force " + src + " ../ }";
                 lines.push_back(newLine);
@@ -136,7 +129,7 @@ void processNcTcl(const std::string &ncPath,
             }
         }
 
-        // ---- Handle MTBFPreferences dump ----
+        // ---- dump handling ----
         if (std::regex_search(line, m, reDump)) {
             std::string inside = m[1].str();
             std::smatch mdump;
@@ -145,7 +138,6 @@ void processNcTcl(const std::string &ncPath,
                 size_t pos = dumpPath.find_last_of("/\\");
                 std::string dumpFile = (pos == std::string::npos) ? dumpPath : dumpPath.substr(pos + 1);
 
-                // replace -dump path with ../<filename>
                 std::string newInside = std::regex_replace(
                     inside,
                     reDumpArg,
@@ -157,7 +149,7 @@ void processNcTcl(const std::string &ncPath,
             }
         }
 
-        // ---- Keep other lines as-is ----
+        // default
         lines.push_back(line);
     }
     in.close();
@@ -165,6 +157,7 @@ void processNcTcl(const std::string &ncPath,
     std::ofstream out(ncPath, std::ios::trunc);
     for (auto &l : lines) out << l << "\n";
 }
+
 
 int main() {
     std::string goldPath = "golds";
