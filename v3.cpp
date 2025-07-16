@@ -1,203 +1,171 @@
 #include <iostream>
 #include <fstream>
-#include <unordered_set>
-#include <unordered_map>
-#include <regex>
 #include <string>
-#include <sstream>
 #include <vector>
+#include <set>
+#include <regex>
 #include <dirent.h>
 #include <sys/stat.h>
 
-bool is_regular_file(const std::string& path) {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) return false;
-    return S_ISREG(st.st_mode);
-}
+// ✅ recursively scan directories
+void scanDirectoryRecursive(const std::string &basePath, std::set<std::string> &files) {
+    DIR *dir = opendir(basePath.c_str());
+    if (!dir) return;
 
-bool is_directory(const std::string& path) {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) return false;
-    return S_ISDIR(st.st_mode);
-}
-
-// List all files in a directory (non-recursive)
-std::unordered_set<std::string> get_gold_filenames(const std::string& golds_dir) {
-    std::unordered_set<std::string> gold_files;
-    DIR* dir = opendir(golds_dir.c_str());
-    if (!dir) return gold_files;
-    struct dirent* entry;
+    struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type == DT_REG) {
-            gold_files.insert(entry->d_name);
-        }
-    }
-    closedir(dir);
-    return gold_files;
-}
-
-// Recursively find all files in SYSRTEMP matching golds filenames
-void find_result_files(
-    const std::string& dir,
-    const std::unordered_set<std::string>& gold_files,
-    std::unordered_map<std::string, std::string>& found
-) {
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    struct dirent* entry;
-    while ((entry = readdir(d)) != nullptr) {
         std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
-        std::string fullpath = dir + "/" + name;
-        if (entry->d_type == DT_DIR) {
-            find_result_files(fullpath, gold_files, found);
-        } else if (entry->d_type == DT_REG) {
-            if (gold_files.count(name)) {
-                found[name] = fullpath;
+
+        std::string fullPath = basePath + "/" + name;
+
+        struct stat pathStat;
+        if (stat(fullPath.c_str(), &pathStat) == 0) {
+            if (S_ISDIR(pathStat.st_mode)) {
+                // recurse
+                scanDirectoryRecursive(fullPath, files);
+            } else if (S_ISREG(pathStat.st_mode)) {
+                files.insert(name); // just the filename
             }
         }
     }
-    closedir(d);
+    closedir(dir);
 }
 
-// Read SYSRTEMP value from Makefile
-std::string get_sysrtemp_value(const std::string& makefile_path) {
-    std::ifstream in(makefile_path);
-    std::string line;
-    std::regex sysrtemp_regex(R"(SYSRTEMP\s*=\s*(.*))");
-    std::smatch match;
-    while (std::getline(in, line)) {
-        if (std::regex_match(line, match, sysrtemp_regex)) {
-            return match[1].str();
+// ✅ read all filenames from golds (no recursion needed)
+std::set<std::string> getGoldFiles(const std::string &goldPath) {
+    std::set<std::string> goldFiles;
+    DIR *dir = opendir(goldPath.c_str());
+    if (!dir) {
+        std::cerr << "Error: golds folder not found at " << goldPath << "\n";
+        return goldFiles;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        std::string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+
+        std::string fullPath = goldPath + "/" + name;
+        struct stat pathStat;
+        if (stat(fullPath.c_str(), &pathStat) == 0 && S_ISREG(pathStat.st_mode)) {
+            goldFiles.insert(name);
         }
     }
-    return "";
+    closedir(dir);
+    return goldFiles;
 }
 
-// Replace SYSRTEMP line in Makefile
-bool update_makefile(const std::string& makefile_path) {
-    std::ifstream in(makefile_path);
-    if (!in) return false;
+// ✅ get SYSRTEMP from Makefile
+std::string getSYSRTEMP(const std::string &makefilePath) {
+    std::ifstream in(makefilePath);
+    if (!in.is_open()) {
+        std::cerr << "Error: Cannot open Makefile at " << makefilePath << "\n";
+        return {};
+    }
+    std::string line;
+    std::regex re("^\\s*SYSRTEMP\\s*=\\s*(.*)$");
+    std::smatch m;
+    std::string sysrtemp;
+    while (std::getline(in, line)) {
+        if (std::regex_search(line, m, re)) {
+            sysrtemp = m[1].str();
+            break;
+        }
+    }
+    return sysrtemp;
+}
+
+// ✅ update Makefile
+void updateMakefile(const std::string &makefilePath) {
+    std::ifstream in(makefilePath);
+    if (!in.is_open()) {
+        std::cerr << "Error: Cannot open Makefile for update.\n";
+        return;
+    }
     std::vector<std::string> lines;
     std::string line;
-    bool changed = false;
-    std::regex sysrtemp_regex(R"(SYSRTEMP\s*=.*)");
+    std::regex re("^\\s*SYSRTEMP\\s*=");
     while (std::getline(in, line)) {
-        if (std::regex_match(line, sysrtemp_regex)) {
+        if (std::regex_search(line, re)) {
             lines.push_back("SYSRTEMP = .");
-            changed = true;
         } else {
             lines.push_back(line);
         }
     }
     in.close();
-    if (changed) {
-        std::ofstream out(makefile_path, std::ios::trunc);
-        for (const auto& l : lines) out << l << "\n";
-    }
-    return changed;
+
+    std::ofstream out(makefilePath, std::ios::trunc);
+    for (auto &l : lines) out << l << "\n";
 }
 
-// Read all lines from a file
-std::vector<std::string> read_lines(const std::string& path) {
-    std::ifstream in(path);
+// ✅ process nc.tcl
+void processNcTcl(const std::string &ncPath,
+                  const std::set<std::string> &goldFiles,
+                  const std::set<std::string> &resultFiles) {
+    std::ifstream in(ncPath);
+    if (!in.is_open()) {
+        std::cerr << "Error: Cannot open nc.tcl at " << ncPath << "\n";
+        return;
+    }
+
     std::vector<std::string> lines;
     std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    return lines;
-}
+    std::regex re(R"(file copy -force\s+([^\s]+)\s+([^\s]+))");
 
-// Write all lines to a file
-void write_lines(const std::string& path, const std::vector<std::string>& lines) {
-    std::ofstream out(path, std::ios::trunc);
-    for (const auto& l : lines) out << l << "\n";
+    while (std::getline(in, line)) {
+        std::smatch m;
+        if (std::regex_search(line, m, re)) {
+            std::string src = m[1].str();
+            std::string dest = m[2].str();
+
+            // extract filename from src manually
+            size_t pos = src.find_last_of("/\\");
+            std::string filename = (pos == std::string::npos) ? src : src.substr(pos + 1);
+
+            if (goldFiles.count(filename) && resultFiles.count(filename)) {
+                std::string newLine = "file copy -force " + src + " ../";
+                lines.push_back(newLine);
+                continue;
+            }
+        }
+        lines.push_back(line);
+    }
+    in.close();
+
+    std::ofstream out(ncPath, std::ios::trunc);
+    for (auto &l : lines) out << l << "\n";
 }
 
 int main() {
-    std::string golds_dir = "golds";
-    std::string makefile_path = "Makefile";
-    std::string nctcl_path = "scripts/nc.tcl";
+    std::string goldPath = "golds";
+    std::string makefilePath = "Makefile";
+    std::string ncPath = "scripts/nc.tcl";
 
-    // 1. Get gold filenames
-    if (!is_directory(golds_dir)) {
-        std::cerr << "golds/ folder not found.\n";
-        return 1;
-    }
-    auto gold_files = get_gold_filenames(golds_dir);
-    if (gold_files.empty()) {
-        std::cout << "No files in golds/. Nothing to do.\n";
-        return 0;
-    }
+    // step1: gold files
+    std::set<std::string> goldFiles = getGoldFiles(goldPath);
+    std::cout << "Gold files found: " << goldFiles.size() << "\n";
 
-    // 2. Get SYSRTEMP value
-    std::string sysrtemp = get_sysrtemp_value(makefile_path);
-    if (sysrtemp.empty() || !is_directory(sysrtemp)) {
-        std::cerr << "SYSRTEMP not found or folder does not exist.\n";
+    // step2: read SYSRTEMP
+    std::string sysrtemp = getSYSRTEMP(makefilePath);
+    if (sysrtemp.empty()) {
+        std::cerr << "Error: Could not find SYSRTEMP in Makefile.\n";
         return 1;
     }
 
-    // 3. Find result files matching golds
-    std::unordered_map<std::string, std::string> found_files;
-    find_result_files(sysrtemp, gold_files, found_files);
+    // prepend results/
+    std::string sysrtempPath = "results/" + sysrtemp;
 
-    // 4. Read nc.tcl lines
-    auto nc_lines = read_lines(nctcl_path);
+    // step3: recursively scan results/SYSRTEMP
+    std::set<std::string> resultFiles;
+    scanDirectoryRecursive(sysrtempPath, resultFiles);
+    std::cout << "Result files found: " << resultFiles.size() << "\n";
 
-    // 5. Track changes
-    bool nc_changed = false;
-    std::unordered_set<std::string> already_handled;
+    // step4: process nc.tcl
+    processNcTcl(ncPath, goldFiles, resultFiles);
 
-    // 6. For each gold file, ensure correct file copy line in nc.tcl
-    for (const auto& kv : found_files) {
-        const std::string& fname = kv.first;
-        const std::string& result_path = kv.second;
-        // Build the source path as used in nc.tcl (with forward slashes)
-        std::string rel_source = result_path;
-        // Remove leading "./" if present
-        if (rel_source.substr(0, 2) == "./") rel_source = rel_source.substr(2);
+    // step5: update Makefile
+    updateMakefile(makefilePath);
 
-        // Regex to match file copy -force for this file
-        std::regex copy_regex("file copy -force [^ ]*" + fname + R"(\s+[^ ]*)");
-        bool found = false;
-        for (auto& line : nc_lines) {
-            if (std::regex_search(line, copy_regex)) {
-                // Fix destination to ../
-                line = "file copy -force ../" + rel_source + " ../";
-                nc_changed = true;
-                found = true;
-                already_handled.insert(fname);
-                break;
-            }
-        }
-        if (!found) {
-            // Append new line
-            nc_lines.push_back("file copy -force ../" + rel_source + " ../");
-            nc_changed = true;
-            already_handled.insert(fname);
-        }
-    }
-
-    // 7. Update nc.tcl if changed
-    if (nc_changed) {
-        write_lines(nctcl_path, nc_lines);
-    }
-
-    // 8. Update Makefile if needed
-    bool makefile_changed = update_makefile(makefile_path);
-
-    // 9. Print summary
-    if (!nc_changed && !makefile_changed) {
-        std::cout << "✅ Everything already perfect. No changes made.\n";
-    } else {
-        if (nc_changed) {
-            std::cout << "✅ Updated scripts/nc.tcl with correct file copy commands for:\n";
-            for (const auto& fname : already_handled) {
-                std::cout << "  - " << fname << "\n";
-            }
-        }
-        if (makefile_changed) {
-            std::cout << "✅ Updated Makefile: set SYSRTEMP = .\n";
-        }
-    }
+    std::cout << "✅ Done. nc.tcl and Makefile updated.\n";
     return 0;
 }
